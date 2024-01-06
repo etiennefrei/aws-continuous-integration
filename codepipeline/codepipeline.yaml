@@ -223,3 +223,151 @@ Resources:
   ArtifactBucket:
     Type: 'AWS::S3::Bucket'
     DeletionPolicy: Retain
+
+  EventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: EventBridgeRule
+      Description: EventRule
+      EventPattern:
+        source: 
+          - "aws.codepipeline"
+        detail-type: 
+          - "CodePipeline Stage Execution State Change"
+        detail:
+          state:
+            - "SUCCEEDED"
+            - "FAILED"
+      RoleArn: String
+      State: "ENABLED"
+      Targets: 
+          - 
+            Arn:
+              !GetAtt PipelineRole.Arn
+            Id: "TargetFunctionV1"
+
+  PermissionForEventsToInvokeLambda: 
+    Type: AWS::Lambda::Permission
+    Properties: 
+      FunctionName: 
+        Ref: "LambdaFunction"
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: 
+        Fn::GetAtt: 
+          - "EventRule"
+          - "Arn"
+
+  GitCommitLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: nodejs18.x
+      Role: arn:aws:iam::123456789012:role/lambda-role
+      Handler: index.handler
+      Code:
+        ZipFile: |
+          console.log('Loading function');
+
+          import AWS from 'aws-sdk';
+          import axios from 'axios';
+
+          export const handler = async (event, context) => {
+              console.log('Received event:', JSON.stringify(event, null, 2));
+              
+              //Auf Pipeline zugreifen um Hash des Commits zu extrahieren
+              AWS.config.update({ region: 'eu-west-1' });
+              const pipelineName = 'Pipeline';
+              const pipelineExecutionId = event.detail["execution-id"];
+              const codepipeline = new AWS.CodePipeline();
+              
+              // Informationen zur aktuellen Ausführung abrufen
+              const executionParams = {
+                pipelineName,
+                pipelineExecutionId
+              };
+              const executionResult = await codepipeline.getPipelineExecution(executionParams).promise();
+              
+              // Commit-Hash extrahieren
+              const commitHash = executionResult.pipelineExecution.artifactRevisions[0].revisionId;
+              
+              console.log('Commit-Hash:', commitHash);
+
+              // GitHub Repository Informationen
+              const owner = 'etiennefrei';
+              const repo = 'test-pipeline';
+              
+              // GitHub API-Zugriffstoken
+              const githubToken = process.env.GITHUB_TOKEN;
+              
+              const comment = `AWS-CI: ${event.detail["pipeline"]} Stage ${event.detail["stage"]} ${event.detail["state"].toLowerCase()}`;
+              
+              try {
+                // GitHub API-Anfrage, um das letzte Commit abzurufen
+                const commitUrl = `https://api.github.com/repos/${owner}/${repo}/commits/${commitHash}`;
+                const headers = {
+                  'Authorization': `Bearer ${githubToken}`,
+                  'Accept': 'application/vnd.github.v3+json'
+                };
+                const response = await axios.get(commitUrl, { headers });
+                
+                // Commit-Objekt aus der API-Antwort extrahieren
+                const commit = response.data;
+      
+                // GitHub API-Anfrage, um einen Kommentar zum Commit zu erstellen
+                const commentsUrl = commit.comments_url;
+                const commentData = {
+                  body: comment
+                };
+                await axios.post(commentsUrl, commentData, { headers });
+    
+                return {
+                  statusCode: 200,
+                  body: 'Kommentar erfolgreich erstellt'
+                };
+              } catch (error) {
+                console.error('Fehler beim Erstellen des Kommentars:', error);
+                return {
+                  statusCode: 500,
+                  body: 'Fehler beim Erstellen des Kommentars'
+                };
+              }
+            };
+      Description: List Amazon S3 buckets in us-east-1.
+      TracingConfig:
+        Mode: Active
+
+  LambdaRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: LambdaRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal: 
+              Service: 
+                - "codebuild.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+
+  LambdaPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: LambdaPolicy
+      Roles:
+        - !Ref LambdaRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: '*'  # TODO Set CloudWatch ARNs
+
+          - Effect: Allow
+            Action:
+              - codepipeline:GetPipelineExecution
+            Resource: '*'s
+            
