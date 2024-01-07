@@ -1,6 +1,7 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: CodePipeline pcls
 Resources:
+  #Pipeline definition
   Pipeline:
     Type: 'AWS::CodePipeline::Pipeline'
     Properties:
@@ -64,7 +65,8 @@ Resources:
 
   PipelineRole:
     Type: "AWS::IAM::Role"
-    Properties: 
+    Properties:
+      RoleName: PipelineRole
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -89,7 +91,7 @@ Resources:
               - logs:CreateLogGroup
               - logs:CreateLogStream
               - logs:PutLogEvents
-            Resource: '*'  # TODO Set CloudWatch ARNs
+            Resource: '*'
 
           - Effect: Allow
             Action:
@@ -127,7 +129,8 @@ Resources:
               - codedeploy:GetDeploymentConfig
               - codedeploy:RegisterApplicationRevision
             Resource: '*'
-      
+
+  #CodeBuild Project to build project   
   CodeBuildProject:
     Type: "AWS::CodeBuild::Project"
     Properties: 
@@ -171,7 +174,7 @@ Resources:
               - logs:CreateLogGroup
               - logs:CreateLogStream
               - logs:PutLogEvents
-            Resource: '*'  # TODO Set CloudWatch ARNs
+            Resource: '*' 
 
           - Effect: Allow
             Action:
@@ -190,6 +193,7 @@ Resources:
               - s3:GetBucketAcl
             Resource: '*'
 
+  #S3 Bucket to host Static Website
   WebsiteBucket:
     Type: 'AWS::S3::Bucket'
     DeletionPolicy: Retain
@@ -220,10 +224,12 @@ Resources:
                 - !Ref WebsiteBucket
                 - /*
 
+  #S3 Bucket to store artifacts
   ArtifactBucket:
     Type: 'AWS::S3::Bucket'
     DeletionPolicy: Retain
 
+  #Event Bridge to invoke Lambda function
   EventRule:
     Type: AWS::Events::Rule
     Properties:
@@ -238,19 +244,17 @@ Resources:
           state:
             - "SUCCEEDED"
             - "FAILED"
-      RoleArn: String
       State: "ENABLED"
       Targets: 
-          - 
-            Arn:
-              !GetAtt PipelineRole.Arn
-            Id: "TargetFunctionV1"
+        - 
+          Arn: !GetAtt GitCommitLambda.Arn
+          Id: "TargetFunctionV1"
 
   PermissionForEventsToInvokeLambda: 
     Type: AWS::Lambda::Permission
     Properties: 
       FunctionName: 
-        Ref: "LambdaFunction"
+        Ref: "GitCommitLambda"
       Action: "lambda:InvokeFunction"
       Principal: "events.amazonaws.com"
       SourceArn: 
@@ -258,83 +262,18 @@ Resources:
           - "EventRule"
           - "Arn"
 
+  #Lambda function to make Github commits
   GitCommitLambda:
     Type: AWS::Lambda::Function
     Properties:
       Runtime: nodejs18.x
-      Role: arn:aws:iam::123456789012:role/lambda-role
+      Role: !GetAtt LambdaRole.Arn
+      FunctionName: GitCommitLambda
       Handler: index.handler
       Code:
-        ZipFile: |
-          console.log('Loading function');
-
-          import AWS from 'aws-sdk';
-          import axios from 'axios';
-
-          export const handler = async (event, context) => {
-              console.log('Received event:', JSON.stringify(event, null, 2));
-              
-              //Auf Pipeline zugreifen um Hash des Commits zu extrahieren
-              AWS.config.update({ region: 'eu-west-1' });
-              const pipelineName = 'Pipeline';
-              const pipelineExecutionId = event.detail["execution-id"];
-              const codepipeline = new AWS.CodePipeline();
-              
-              // Informationen zur aktuellen Ausführung abrufen
-              const executionParams = {
-                pipelineName,
-                pipelineExecutionId
-              };
-              const executionResult = await codepipeline.getPipelineExecution(executionParams).promise();
-              
-              // Commit-Hash extrahieren
-              const commitHash = executionResult.pipelineExecution.artifactRevisions[0].revisionId;
-              
-              console.log('Commit-Hash:', commitHash);
-
-              // GitHub Repository Informationen
-              const owner = 'etiennefrei';
-              const repo = 'test-pipeline';
-              
-              // GitHub API-Zugriffstoken
-              const githubToken = process.env.GITHUB_TOKEN;
-              
-              const comment = `AWS-CI: ${event.detail["pipeline"]} Stage ${event.detail["stage"]} ${event.detail["state"].toLowerCase()}`;
-              
-              try {
-                // GitHub API-Anfrage, um das letzte Commit abzurufen
-                const commitUrl = `https://api.github.com/repos/${owner}/${repo}/commits/${commitHash}`;
-                const headers = {
-                  'Authorization': `Bearer ${githubToken}`,
-                  'Accept': 'application/vnd.github.v3+json'
-                };
-                const response = await axios.get(commitUrl, { headers });
-                
-                // Commit-Objekt aus der API-Antwort extrahieren
-                const commit = response.data;
-      
-                // GitHub API-Anfrage, um einen Kommentar zum Commit zu erstellen
-                const commentsUrl = commit.comments_url;
-                const commentData = {
-                  body: comment
-                };
-                await axios.post(commentsUrl, commentData, { headers });
-    
-                return {
-                  statusCode: 200,
-                  body: 'Kommentar erfolgreich erstellt'
-                };
-              } catch (error) {
-                console.error('Fehler beim Erstellen des Kommentars:', error);
-                return {
-                  statusCode: 500,
-                  body: 'Fehler beim Erstellen des Kommentars'
-                };
-              }
-            };
-      Description: List Amazon S3 buckets in us-east-1.
-      TracingConfig:
-        Mode: Active
+        S3Bucket: angular-deployment
+        S3Key: test/lambdaCreateGithubComment.zip
+      Description: List Amazon S3 buckets in us-east-1
 
   LambdaRole:
     Type: "AWS::IAM::Role"
@@ -346,7 +285,7 @@ Resources:
           - Effect: "Allow"
             Principal: 
               Service: 
-                - "codebuild.amazonaws.com"
+                - "lambda.amazonaws.com"
             Action: 
               - "sts:AssumeRole"
 
@@ -364,10 +303,31 @@ Resources:
               - logs:CreateLogGroup
               - logs:CreateLogStream
               - logs:PutLogEvents
-            Resource: '*'  # TODO Set CloudWatch ARNs
+            Resource: '*'
 
           - Effect: Allow
             Action:
               - codepipeline:GetPipelineExecution
-            Resource: '*'s
-            
+            Resource: '*'
+
+  #Mail Notification
+  NotificationSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: NotificationSNSTopic
+      Subscription:
+        - Endpoint: "etienne.frei@students.fhnw.ch"
+          Protocol: "Email"
+
+  MailNotificationRule:
+    Type: 'AWS::CodeStarNotifications::NotificationRule'
+    Properties:
+      Name: MailNotificationRule
+      DetailType: FULL
+      Resource: !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}
+      EventTypeIds: 
+          - codepipeline-pipeline-pipeline-execution-failed
+          - codepipeline-pipeline-pipeline-execution-succeeded
+      Targets: 
+          - TargetType: SNS 
+            TargetAddress: !Ref NotificationSNSTopic
