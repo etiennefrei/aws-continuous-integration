@@ -271,8 +271,8 @@ Resources:
       FunctionName: GitCommitLambda
       Handler: index.handler
       Code:
-        S3Bucket: angular-deployment
-        S3Key: test/lambdaCreateGithubComment.zip
+        S3Bucket: pipeline-stack-sources
+        S3Key: lambdaCreateGithubComment.zip
       Description: List Amazon S3 buckets in us-east-1
 
   LambdaRole:
