@@ -1,3 +1,3 @@
-# aws-continuous-integration
+# CI/CD Pipeline for building and deploying Angular Projects
 ---
-## update 1
+This is a CloudFormation project which creates a CodePipeline that builds and deploys an Angular Project as a static website to a S3 Bucket. 
